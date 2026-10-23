@@ -1,0 +1,54 @@
+name: Picker
+options:
+  bundleIdPrefix: com.local
+  deploymentTarget:
+    macOS: '26.0'
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    MACOSX_DEPLOYMENT_TARGET: '26.0'
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: '-'
+    MARKETING_VERSION: 1.0.0
+    CURRENT_PROJECT_VERSION: 1
+    PICKER_UPDATE_CHANNEL: Development
+  configs:
+    Debug:
+      ENABLE_HARDENED_RUNTIME: NO
+    Release:
+      ENABLE_HARDENED_RUNTIME: YES
+targets:
+  Picker:
+    type: application
+    platform: macOS
+    sources: [Picker]
+    dependencies:
+      - package: Sparkle
+    configFiles:
+      Debug: Config/Updates.xcconfig
+      Release: Config/Updates.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.Picker
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Picker/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Picker
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Picker finds similar photos on your Mac and deletes only the photos you confirm after choosing keepers.
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
+        ENABLE_APP_SANDBOX: YES
+        CODE_SIGN_ENTITLEMENTS: Picker/Picker.entitlements
+    scheme:
+      testTargets: [PickerTests]
+  PickerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [PickerTests]
+    dependencies:
+      - target: Picker
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES

@@ -1,0 +1,10 @@
+/build*/
+/dist/
+/DerivedData/
+*.log
+.DS_Store
+xcuserdata/
+*.xcuserstate
+.env
+*.p12
+*.key

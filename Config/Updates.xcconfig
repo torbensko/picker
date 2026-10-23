@@ -1,0 +1,2 @@
+// Public verification key. Keep the private key in Keychain and GitHub Secrets.
+SPARKLE_PUBLIC_KEY = qUVX/+Xfr4iLiWXPO7wZjAypDKXNQna31QS5ZcsFN+o=
