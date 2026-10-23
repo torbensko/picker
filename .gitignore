@@ -8,3 +8,5 @@ xcuserdata/
 .env
 *.p12
 *.key
+
+.playwright-mcp/
