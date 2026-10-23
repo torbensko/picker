@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 tools="$PWD/build/SourcePackages/artifacts/sparkle/Sparkle/bin"
-[[ -d 'dist/Picker.app' ]] || { echo 'Build Picker Dev first.' >&2; exit 1; }
+[[ -d 'dist/Picker.app' ]] || { echo 'Run scripts/package.sh --unsigned first.' >&2; exit 1; }
 fixture="$(mktemp -d "$PWD/dist/update-fixture.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 mkdir "$fixture/archives"

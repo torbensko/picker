@@ -1,4 +1,5 @@
 import Combine
+import Observation
 import Sparkle
 import SwiftUI
 
@@ -56,12 +57,25 @@ struct UpdatePolicy {
         controller.updater.publisher(for: \.canCheckForUpdates).assign(to: &$canCheck)
         controller.updater.publisher(for: \.automaticallyChecksForUpdates).assign(to: &$automaticChecks)
         // Let Sparkle own permission, scheduling and persisted preferences.
+        observeActivity(of: library)
         controller.startUpdater()
     }
 
     func check() { controller?.checkForUpdates(nil) }
     func setAutomaticChecks(_ enabled: Bool) { controller?.updater.automaticallyChecksForUpdates = enabled }
-    func resumeIfIdle() { relaunchGate.resumeIfIdle() }
+    private func observeActivity(of library: LibraryModel) {
+        // Observe the model independently of any open window: a scan can finish
+        // after the user closes the window while an update is waiting to install.
+        withObservationTracking {
+            _ = library.blocksUpdateRelaunch
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.relaunchGate.resumeIfIdle()
+                self.observeActivity(of: library)
+            }
+        }
+    }
 
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {

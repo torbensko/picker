@@ -15,7 +15,6 @@ struct PickerApp: App {
         Window("Picker", id: "main") {
             ContentView(model: library)
                 .frame(minWidth: 960, minHeight: 620)
-                .onChange(of: library.blocksUpdateRelaunch) { updates.resumeIfIdle() }
         }
         .defaultSize(width: 1280, height: 820)
         .windowToolbarStyle(.unifiedCompact)
