@@ -1,0 +1,8 @@
+Created with the built-in image_gen tool.
+
+Use case: style-transfer.
+Asset type: Picker macOS app logo, Liquid Glass revision.
+Image 1 is the edit target. Image 2 is a reference for the soft, luminous, layered material of the Apple Photos app icon.
+Preserve Image 1's exact three-card fan composition, rounded rectangular card shapes, their positions and rotations, relative sizes, overall silhouette and generous margins. Preserve the pink left card, cyan-blue lifted center card, golden-yellow right card, and purple/green color blends at their intersections.
+Change only the material rendering: make the cards resemble thin, translucent, softly sculpted colored Liquid Glass, in the restrained style of a current Apple Photos icon. Give each card a very gently convex surface, delicate beveled edges with thin soft highlights, luminous internal color gradients, subtle refraction of the cards underneath, and soft diffused contact shadows that establish the layering. Overlaps should feel optically blended and transparent, with purple and green still easy to see. Rich vibrant color and clean smooth geometry; the cards should feel light and fluid.
+Keep the view front-on and the near-white full-square background. No enclosing app-icon tile, perspective change, text, extra objects or symbols. Avoid thick glass slabs, dramatic 3D extrusion, hard rim outlines, chrome, sparkles, harsh specular streaks, grain, photorealistic surroundings, or heavy shadows. Maintain clarity at small Dock sizes. Deliver one finished square image.
