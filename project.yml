@@ -33,6 +33,7 @@ targets:
       Release: Config/Updates.xcconfig
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.local.Picker
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Picker/Info.plist
