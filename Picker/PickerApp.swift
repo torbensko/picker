@@ -6,7 +6,15 @@ struct PickerApp: App {
     @StateObject private var updates: UpdateController
 
     init() {
+        #if DEBUG
+        // Hosted tests render fixture views and must not start the system Photos scan.
+        let environment = ProcessInfo.processInfo.environment
+        let testing = environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil || NSClassFromString("XCTestCase") != nil
+        let library = LibraryModel(persistenceEnabled: !testing)
+        #else
         let library = LibraryModel()
+        #endif
         _library = State(initialValue: library)
         _updates = StateObject(wrappedValue: UpdateController(library: library))
     }

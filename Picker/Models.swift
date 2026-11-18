@@ -29,6 +29,8 @@ struct SimilarGroup: Identifiable, Codable, Hashable {
 struct Decision: Codable, Equatable {
     var keepers: Set<String> = []
     var skipped = false
+    // Omitted by older saves, which expressed removals as the complement of the keepers.
+    var discards: Set<String>? = nil
 }
 
 enum ReviewRules {
@@ -36,11 +38,27 @@ enum ReviewRules {
         guard let before, before.id == after.id else { return false }
         return before.photos.sorted { $0.id < $1.id } == after.photos.sorted { $0.id < $1.id }
     }
+    static func valid(_ decision: Decision, in group: SimilarGroup) -> Bool {
+        let ids = Set(group.photos.map(\.id))
+        let discards = decision.discards ?? []
+        return !decision.skipped && !ids.isEmpty && decision.keepers.isSubset(of: ids)
+            && discards.isSubset(of: ids) && discards.isDisjoint(with: decision.keepers)
+    }
+
     static func deletions(in group: SimilarGroup, decision: Decision?) -> [Photo] {
-        guard let decision, !decision.skipped, !decision.keepers.isEmpty,
-              decision.keepers.isSubset(of: Set(group.photos.map(\.id))) else { return [] }
+        guard let decision, valid(decision, in: group) else { return [] }
+        if let discards = decision.discards { return group.photos.filter { discards.contains($0.id) } }
+        guard !decision.keepers.isEmpty else { return [] }
         return group.photos.filter { !decision.keepers.contains($0.id) }
     }
+
+    static func summary(in group: SimilarGroup, decision: Decision?) -> String {
+        guard let decision, valid(decision, in: group) else { return "\(group.photos.count) photos · choose your keepers" }
+        let marked = deletions(in: group, decision: decision).count
+        let undecided = group.photos.count - marked - decision.keepers.count
+        return "\(decision.keepers.count) kept · \(marked) pending" + (undecided > 0 ? " · \(undecided) undecided" : "")
+    }
+
     static func reconciled(_ decisions: [String: Decision], old: [SimilarGroup], new: [SimilarGroup]) -> [String: Decision] {
         let previous = Dictionary(uniqueKeysWithValues: old.map { ($0.id, $0) })
         let updated = Dictionary(uniqueKeysWithValues: new.map { ($0.id, $0) })
@@ -84,5 +102,19 @@ struct ProcessedGroup: Codable, Identifiable {
     let processedAt: Date
     var deletedAt: Date? = nil
     var invalidated = false
-    var id: String { group.id }
+    var manual: Bool? = nil
+    var id: String { manual == true ? "cleanup|" + group.id : group.id }
+    var removals: [Photo] { ReviewRules.deletions(in: group, decision: decision) }
+    var deletionSummary: String {
+        let deleted = removals.count
+        let undecided = group.photos.count - decision.keepers.count - deleted
+        if manual == true { return "\(deleted) deleted" }
+        return "\(decision.keepers.count) kept · \(deleted) deleted" + (undecided > 0 ? " · \(undecided) left in Photos" : "")
+    }
+}
+
+struct CleanupPhoto: Identifiable, Equatable {
+    let photo: Photo
+    let screenshot: Bool
+    var id: String { photo.id }
 }

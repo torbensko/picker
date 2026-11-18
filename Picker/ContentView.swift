@@ -34,11 +34,15 @@ struct ContentView: View {
         let favorites = model.plannedPhotos.filter(\.favorite).count
         let scope: String
         if model.deletionScope == .currentGroup, let entry = model.deletionPlan.first {
-            scope = "Only the group from \(entry.group.date.formatted(date: .abbreviated, time: .shortened)) will be processed. Its \(entry.decision.keepers.count) keepers stay in Photos. Other pending groups are unchanged."
+            let remaining = entry.group.photos.count - entry.removals.count
+            scope = remaining == 0
+                ? "Every photo in this group will be removed from Photos. Other pending photos stay queued."
+                : "\(remaining) photos in this group will stay in Photos. Other pending photos stay queued."
         } else {
-            scope = "This deletes the entire Pending list across \(model.deletionPlan.count) groups. All keepers stay in Photos."
+            scope = "This deletes every marked photo in Pending, including any entire groups and Cleanup selections."
         }
-        return "\(scope) \(favorites > 0 ? "Includes \(favorites) favorites. " : "")Deletion syncs through iCloud Photos. You can recover deleted photos in Recently Deleted."
+        let live = model.plannedPhotos.contains(where: \.live)
+        return "\(scope) \(favorites > 0 ? "Includes \(favorites) favorites. " : "")\(live ? "Live Photos are deleted with their motion. " : "")Deletion syncs through iCloud Photos. Deleted photos move to Recently Deleted."
     }
 
     private var welcome: some View {
@@ -46,7 +50,7 @@ struct ContentView: View {
             Image(systemName: "photo.stack").font(.system(size: 64, weight: .light)).foregroundStyle(.tint)
             VStack(spacing: 10) {
                 Text("Make room for your favorites.").font(.largeTitle.bold())
-                Text("Clean up your Apple Photos library.\nPicker finds similar photos so you can keep the ones you love.")
+                Text("Find similar photos and review individual images in your Apple Photos library.")
                     .font(.title3).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             Button("Connect to Photos") { Task { await model.connect() } }
@@ -114,9 +118,15 @@ struct ContentView: View {
                         QueueView(model: model)
                             .toolbar { pendingToolbar }
                     }
+                } else if model.filter == .cleanup {
+                    NavigationSplitView(columnVisibility: $columnVisibility) { sidebar } detail: {
+                        CleanupView(model: model)
+                    }
                 } else {
                     NavigationSplitView(columnVisibility: $columnVisibility) { sidebar } content: { groupList } detail: {
-                        if let group = model.selectedGroup {
+                        if model.filter == .history, let entry = model.selectedHistory, entry.manual == true {
+                            historyDetail(entry)
+                        } else if let group = model.selectedGroup {
                             Group {
                                 if let entry = model.history[group.id], entry.deletedAt != nil || (model.filter == .history && entry.invalidated) {
                                     historyDetail(entry)
@@ -145,8 +155,14 @@ struct ContentView: View {
 
     private var groupList: some View {
         List(selection: $model.selectedID) {
-            ForEach(model.visibleGroups) { group in
-                GroupRow(group: group, decision: model.decisions[group.id], history: model.history[group.id]).tag(group.id)
+            if model.filter == .history {
+                ForEach(model.historyEntries) { entry in
+                    GroupRow(group: entry.group, decision: entry.decision, history: entry).tag(entry.id)
+                }
+            } else {
+                ForEach(model.visibleGroups) { group in
+                    GroupRow(group: group, decision: model.decisions[group.id], history: model.history[group.id]).tag(group.id)
+                }
             }
         }
         .toolbar {
@@ -178,6 +194,16 @@ struct ContentView: View {
             }
         }.sharedBackgroundVisibility(.hidden)
         ToolbarSpacer(.flexible, placement: .primaryAction)
+        if model.filter == .all {
+            ToolbarItem(placement: .primaryAction) {
+                Button { model.markEntireGroup(group) } label: {
+                    Label("Mark Entire Group", systemImage: "trash")
+                        .labelStyle(.titleAndIcon)
+                }
+                .disabled(!model.canReview(group) || ReviewRules.deletions(in: group, decision: model.decisions[group.id]).count == group.photos.count)
+                .help("Mark every photo in this group and add it to Pending")
+            }
+        }
         ToolbarItem(placement: .primaryAction) {
             Button("Reset") { model.reset(group) }
                 .disabled(!model.canReview(group) || (model.decisions[group.id] == nil && model.history[group.id] == nil))
@@ -196,7 +222,7 @@ struct ContentView: View {
         ToolbarSpacer(.flexible, placement: .primaryAction)
         ToolbarItem(placement: .primaryAction) {
             Button("Delete All \(model.deletionPhotos.count.formatted()) Pending Photos…", role: .destructive) { model.openQueue() }
-                .disabled(model.deletionPhotos.isEmpty || model.deleting || model.preparingReview || model.showQueue)
+                .disabled(!model.canOpenQueue || model.deleting || model.preparingReview || model.showQueue)
                 .help("Delete every crossed photo across all pending groups, after confirmation")
         }
     }
@@ -207,12 +233,12 @@ struct ContentView: View {
                 Image(systemName: "chevron.left").frame(width: 32, height: 32).contentShape(Rectangle())
             }
             .help("Previous group (⌘↑)").accessibilityLabel("Previous Group")
-            .disabled(model.visibleGroups.first?.id == model.selectedID || model.visibleGroups.isEmpty)
+            .disabled((model.filter == .history ? model.historyEntries.first?.id : model.visibleGroups.first?.id) == model.selectedID || model.visibleGroups.isEmpty)
             Button { model.moveGroup(1) } label: {
                 Image(systemName: "chevron.right").frame(width: 32, height: 32).contentShape(Rectangle())
             }
             .help("Next group (⌘↓)").accessibilityLabel("Next Group")
-            .disabled(model.visibleGroups.last?.id == model.selectedID || model.visibleGroups.isEmpty)
+            .disabled((model.filter == .history ? model.historyEntries.last?.id : model.visibleGroups.last?.id) == model.selectedID || model.visibleGroups.isEmpty)
         }
         .buttonStyle(.plain)
         .glassEffect(.regular, in: Capsule())
@@ -221,11 +247,9 @@ struct ContentView: View {
 
     private func groupSummary(_ group: SimilarGroup) -> String {
         if let entry = model.history[group.id], entry.deletedAt != nil {
-            return "\(entry.decision.keepers.count) kept · \(group.photos.count - entry.decision.keepers.count) deleted"
+            return entry.deletionSummary
         }
-        let count = model.decisions[group.id]?.keepers.count ?? 0
-        guard count > 0 else { return "\(group.photos.count) photos · choose your keepers" }
-        return "\(count) kept · \(group.photos.count - count) to remove"
+        return ReviewRules.summary(in: group, decision: model.decisions[group.id])
     }
 
     private var footer: some View {
@@ -309,16 +333,18 @@ struct ContentView: View {
 
     private func historyDetail(_ entry: ProcessedGroup) -> some View {
         VStack(spacing: 20) {
-            Label(entry.invalidated ? "Library Changed" : "Cleanup Complete", systemImage: entry.invalidated ? "arrow.clockwise" : "checkmark.circle.fill")
+            Label(entry.invalidated ? "Library Changed" : entry.manual == true ? "Cleanup Selection Deleted" : "Cleanup Complete", systemImage: entry.invalidated ? "arrow.clockwise" : "checkmark.circle.fill")
                 .font(.title2).foregroundStyle(entry.invalidated ? Color.secondary : Color.green)
-            Text(entry.invalidated ? "These photos changed after review. Review the updated group in Similar Photos before applying it again." : "\(entry.decision.keepers.count) kept · \(entry.group.photos.count - entry.decision.keepers.count) deleted")
+            Text(entry.invalidated ? "These photos changed after review. Review the updated group in Similar Photos before applying it again." : entry.deletionSummary)
                 .foregroundStyle(.secondary).multilineTextAlignment(.center)
             if !entry.invalidated {
                 Text("Processed \(entry.processedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
-                ScrollView(.horizontal) {
-                    HStack {
-                        ForEach(entry.group.photos.filter { entry.decision.keepers.contains($0.id) }) { photo in
-                            PhotoView(photo: photo).frame(width: 200, height: 160).clipShape(RoundedRectangle(cornerRadius: 8))
+                if !entry.decision.keepers.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack {
+                            ForEach(entry.group.photos.filter { entry.decision.keepers.contains($0.id) }) { photo in
+                                PhotoView(photo: photo).frame(width: 200, height: 160).clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
                         }
                     }
                 }
@@ -338,15 +364,20 @@ private struct GroupRow: View {
         HStack(spacing: 12) {
             if let photo = group.photos.first(where: { history?.deletedAt == nil || history?.decision.keepers.contains($0.id) == true }) {
                 PhotoView(photo: photo).frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 5))
+            } else {
+                Image(systemName: "trash").foregroundStyle(.secondary).frame(width: 52, height: 52)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text(group.date.formatted(date: .abbreviated, time: .omitted)).font(.headline)
-                Text("\(group.photos.count) photos · \(group.date.formatted(date: .omitted, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                let date = history?.manual == true ? history?.processedAt ?? group.date : group.date
+                Text(date.formatted(date: .abbreviated, time: .omitted)).font(.headline)
+                Text(history?.manual == true ? "Cleanup selection" : "\(group.photos.count) photos · \(date.formatted(date: .omitted, time: .shortened))")
+                    .font(.caption).foregroundStyle(.secondary)
                 if let history {
-                    Label(history.deletedAt != nil ? "Cleaned up" : history.invalidated ? "Needs review" : history.decision.skipped ? "Reviewed without deletion" : "Kept all", systemImage: history.deletedAt != nil ? "checkmark.circle.fill" : "clock")
+                    Label(history.deletedAt != nil ? history.deletionSummary : history.invalidated ? "Needs review" : history.decision.skipped ? "Reviewed without deletion" : "Kept all", systemImage: history.deletedAt != nil ? "checkmark.circle.fill" : "clock")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if let decision, !decision.keepers.isEmpty {
-                    Text("\(decision.keepers.count) kept · \(group.photos.count - decision.keepers.count) pending").font(.caption).foregroundStyle(.secondary)
+                } else if decision != nil {
+                    Text(ReviewRules.summary(in: group, decision: decision)).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }.padding(.vertical, 5)

@@ -4,6 +4,8 @@ import Photos
 struct PhotoView: View {
     let photo: Photo
     var large = false
+    var onReadable: ((Photo) -> Void)? = nil
+    @Environment(\.pickerPhotoRequestsEnabled) private var photoRequestsEnabled
     @Environment(\.displayScale) private var displayScale
     @State private var image: NSImage?
     @State private var unavailable = false
@@ -21,7 +23,7 @@ struct PhotoView: View {
             let target = previewTarget(for: geometry.size)
             content
                 .task(id: "\(photo.id)-\(photo.modified?.timeIntervalSince1970 ?? 0)-\(large)-\(target.width)-\(target.height)") {
-                    guard geometry.size.width > 0, geometry.size.height > 0 else { return }
+                    guard photoRequestsEnabled, geometry.size.width > 0, geometry.size.height > 0 else { return }
                     load(targetSize: target)
                 }
         }
@@ -110,7 +112,10 @@ struct PhotoView: View {
             guard (info?[PHImageCancelledKey] as? Bool) != true else { return }
             Task { @MainActor in
                 guard generation == token, !previewLoaded else { return }
-                if let result { image = result }
+                if let result {
+                    image = result
+                    if !large, (info?[PHImageResultIsDegradedKey] as? Bool) != true { onReadable?(photo) }
+                }
                 else if image == nil { unavailable = true }
             }
         }
@@ -162,6 +167,7 @@ struct PhotoView: View {
                 }
                 loadingPreview = false
                 previewLoaded = result != nil
+                if previewLoaded { onReadable?(photo) }
                 if result == nil {
                     failure = message ?? "Couldn’t load the preview. Check your connection and try again."
                     unavailable = image == nil
@@ -169,5 +175,17 @@ struct PhotoView: View {
             }
         }
         requests.append(previewRequest)
+    }
+}
+
+
+private struct PickerPhotoRequestsEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var pickerPhotoRequestsEnabled: Bool {
+        get { self[PickerPhotoRequestsEnabledKey.self] }
+        set { self[PickerPhotoRequestsEnabledKey.self] = newValue }
     }
 }

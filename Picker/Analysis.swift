@@ -5,6 +5,7 @@ import Vision
 struct ScanResult {
     let library: SavedLibrary
     let progress: ScanProgress
+    let cleanupPhotos: [CleanupPhoto]
 }
 
 actor PhotoAnalyzer {
@@ -142,7 +143,13 @@ actor PhotoAnalyzer {
             cache.groups.sort { $0.date > $1.date }
             if needsCacheWrite { try LocalStore.write(cache, name: "analysis.json") }
             loadedCache = cache
-            return ScanResult(library: cache, progress: progress)
+            // Include cloud-only assets from the metadata fetch even when Vision had no pixels.
+            let cleanupPhotos = stamps.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
+                .map { stamp in
+                    CleanupPhoto(photo: stamp.photo(score: 0),
+                                 screenshot: assets[stamp.id]?.mediaSubtypes.contains(.photoScreenshot) == true)
+                }
+            return ScanResult(library: cache, progress: progress, cleanupPhotos: cleanupPhotos)
         } catch {
             if !pendingGroups.isEmpty { await update(.completedGroups(pendingGroups)) }
             await update(.progress(progress))

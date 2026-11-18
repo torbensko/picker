@@ -15,7 +15,7 @@ final class LayoutTests: XCTestCase {
         model.scanning = true
         model.applyScanUpdate(.prepared(previous: [], ready: [group], progress: ScanProgress(checked: 300, total: 30000, cached: 280, analyzed: 20)))
         model.chooseHighlighted()
-        let host = NSHostingView(rootView: ContentView(model: model))
+        let host = NSHostingView(rootView: ContentView(model: model).environment(\.pickerPhotoRequestsEnabled, false))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.contentView = host
         host.frame = NSRect(x: 0, y: 0, width: 960, height: 620)

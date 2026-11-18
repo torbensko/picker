@@ -2,8 +2,8 @@ import XCTest
 @testable import Picker
 
 final class WorkflowTests: XCTestCase {
-    func group(_ prefix: String) -> SimilarGroup {
-        SimilarGroup(photos: (0..<3).map {
+    func group(_ prefix: String, count: Int = 3) -> SimilarGroup {
+        SimilarGroup(photos: (0..<count).map {
             Photo(id: "\(prefix)\($0)", date: Date(timeIntervalSince1970: 1000 + Double($0)), modified: nil,
                   width: 1000, height: 1000, favorite: false, live: false, score: $0 == 0 ? 1 : 0)
         })
@@ -57,10 +57,10 @@ final class WorkflowTests: XCTestCase {
         model.select(group)
         model.setKeeper(group.photos[1], in: group, keep: false)
         XCTAssertEqual(model.deletionPhotos.map(\.id), ["a1"])
-        XCTAssertEqual(model.decisions[group.id]?.keepers, ["a0", "a2"])
+        XCTAssertEqual(model.decisions[group.id]?.keepers, [])
         model.keepPending(group.photos[1], group: group)
         XCTAssertTrue(model.deletionPhotos.isEmpty)
-        XCTAssertEqual(model.decisions[group.id]?.keepers.count, 3)
+        XCTAssertEqual(model.decisions[group.id]?.keepers, ["a1"])
     }
     @MainActor func testPendingDeleteIncludesAllCrossesWithoutApply() {
         let first = group("a"), second = group("b"), untouched = group("c")
@@ -155,7 +155,8 @@ final class WorkflowTests: XCTestCase {
         let model = LibraryModel(persistenceEnabled: false)
         model.groups = [original]
         model.select(original)
-        model.setKeeper(original.photos[2], in: original, keep: false)
+        model.chooseHighlighted()
+        model.setKeeper(original.photos[1], in: original, keep: true)
         model.applyCurrentGroup()
         model.recordDeletionSuccess(model.deletionPlan)
         model.showQueue = false
@@ -189,5 +190,160 @@ final class WorkflowTests: XCTestCase {
         XCTAssertTrue(model.history.isEmpty)
         XCTAssertNil(model.decisions[group.id])
         XCTAssertEqual(model.sidebarCount(.all), 1)
+    }
+
+
+    @MainActor func testRouterBothWaysAndConfirmedDeletion() async throws {
+        let router = group("router", count: 2)
+        for markEntireGroup in [false, true] {
+            var deleted: Set<String> = []
+            let model = LibraryModel(persistenceEnabled: false) { snapshots, ids in
+                XCTAssertEqual(snapshots, router.photos)
+                deleted = ids
+            }
+            model.groups = [router]
+            model.select(router)
+            if markEntireGroup {
+                model.markEntireGroup(router)
+            } else {
+                model.setKeeper(router.photos[0], in: router, keep: false)
+                XCTAssertEqual(model.deletionPhotos, [router.photos[0]])
+                model.setKeeper(router.photos[1], in: router, keep: false)
+            }
+            XCTAssertEqual(model.decisions[router.id]?.keepers, [])
+            XCTAssertEqual(model.deletionPhotos, router.photos)
+            model.applyCurrentGroup()
+            XCTAssertTrue(deleted.isEmpty)
+            XCTAssertEqual(model.plannedPhotos, router.photos)
+            let task = try XCTUnwrap(model.deleteConfirmedPlan())
+            await task.value
+            XCTAssertEqual(deleted, ["router0", "router1"])
+            XCTAssertTrue(model.deletionPhotos.isEmpty)
+            let persistedHistory = try JSONEncoder().encode(model.history)
+            let restored = try JSONDecoder().decode([String: ProcessedGroup].self, from: persistedHistory)
+            XCTAssertEqual(restored[router.id]?.deletionSummary, "0 kept · 2 deleted")
+            XCTAssertNotNil(restored[router.id]?.deletedAt)
+            model.applyScanUpdate(.prepared(previous: [router], ready: [], progress: ScanProgress()))
+            XCTAssertEqual(model.sidebarCount(.all), 0)
+            XCTAssertEqual(model.sidebarCount(.pending), 0)
+            XCTAssertEqual(model.sidebarCount(.history), 1)
+        }
+    }
+
+    @MainActor func testMarkEntireGroupCanRestoreSeveralOrReset() {
+        let group = group("a", count: 7)
+        let model = LibraryModel(persistenceEnabled: false)
+        model.groups = [group]
+        model.select(group)
+        model.chooseHighlighted()
+        model.setKeeper(group.photos[1], in: group, keep: true)
+        model.setKeeper(group.photos[2], in: group, keep: true)
+        XCTAssertEqual(model.decisions[group.id]?.keepers.count, 3)
+        XCTAssertEqual(model.deletionPhotos.count, 4)
+
+        model.markEntireGroup(group)
+        model.keepPending(group.photos[1], group: group)
+        model.setKeeper(group.photos[2], in: group, keep: true)
+        XCTAssertEqual(model.decisions[group.id]?.keepers, ["a1", "a2"])
+        XCTAssertEqual(model.deletionPhotos.count, 5)
+        model.reset(group)
+        XCTAssertNil(model.decisions[group.id])
+        XCTAssertTrue(model.deletionPhotos.isEmpty)
+    }
+
+    @MainActor func testCancelledAllDiscardKeepsPending() {
+        let group = group("a")
+        let model = LibraryModel(persistenceEnabled: false) { _, _ in XCTFail("Unexpected deletion") }
+        model.groups = [group]
+        model.select(group)
+        model.markEntireGroup(group)
+        model.applyCurrentGroup()
+        model.showQueue = false
+        model.queueClosed()
+        XCTAssertNil(model.deleteConfirmedPlan())
+        XCTAssertEqual(model.deletionPhotos, group.photos)
+        XCTAssertTrue(model.history.isEmpty)
+    }
+
+    @MainActor func testDeletionErrorsPreservePendingAndPassEveryGroupMemberForValidation() async throws {
+        enum PhotosFailure: Error { case permissions, missingPhoto, cancelled }
+        for failure in [PhotosFailure.permissions, .missingPhoto, .cancelled] {
+            let group = group("a")
+            let model = LibraryModel(persistenceEnabled: false) { snapshots, ids in
+                XCTAssertEqual(snapshots, group.photos, "The adapter checks keepers and neutral members too")
+                XCTAssertEqual(ids, ["a1"])
+                throw failure
+            }
+            model.groups = [group]
+            model.select(group)
+            model.setKeeper(group.photos[1], in: group, keep: false)
+            model.applyCurrentGroup()
+            let task = try XCTUnwrap(model.deleteConfirmedPlan())
+            await task.value
+            XCTAssertNotNil(model.errorMessage)
+            XCTAssertEqual(model.deletionPhotos, [group.photos[1]])
+            XCTAssertTrue(model.history.isEmpty)
+        }
+    }
+
+    @MainActor func testChangedGroupStopsConfirmedDeletionBeforePhotoKit() async throws {
+        let group = group("a")
+        let model = LibraryModel(persistenceEnabled: false) { _, _ in XCTFail("Stale plan reached PhotoKit") }
+        model.groups = [group]
+        model.select(group)
+        model.markEntireGroup(group)
+        model.applyCurrentGroup()
+        model.groups = [SimilarGroup(photos: Array(group.photos.dropLast()))]
+        let task = try XCTUnwrap(model.deleteConfirmedPlan())
+        await task.value
+        XCTAssertNotNil(model.errorMessage)
+        XCTAssertTrue(model.history.isEmpty)
+    }
+
+    @MainActor func testMixedPendingBatchKeepsAnIndependentManualHistoryEntry() async throws {
+        let allDiscarded = group("a", count: 2)
+        let partial = group("b")
+        let manual = group("c")
+        let model = LibraryModel(persistenceEnabled: false) { snapshots, ids in
+            XCTAssertEqual(Set(snapshots), Set(allDiscarded.photos + partial.photos + [manual.photos[0]]))
+            XCTAssertEqual(ids, ["a0", "a1", "b1", "b2", "c0"])
+        }
+        model.groups = [allDiscarded, partial]
+        model.markEntireGroup(allDiscarded)
+        model.select(partial)
+        model.chooseHighlighted()
+        model.updateCleanupCatalog((manual.photos + partial.photos).map { CleanupPhoto(photo: $0, screenshot: true) })
+        XCTAssertEqual(model.cleanupCatalog.map(\.id), ["c0", "c1", "c2"])
+        model.noteCleanupPreview(manual.photos[0])
+        model.noteCleanupPreview(manual.photos[2])
+        model.markCleanup(["c0", "c1", "c2"])
+        XCTAssertEqual(model.pendingCleanup.map(\.id), ["c2", "c0"], "Unpreviewed photos cannot be marked")
+        model.unmarkCleanup(manual.photos[2])
+        model.openQueue()
+        XCTAssertEqual(model.plannedPhotos.count, 5)
+        let task = try XCTUnwrap(model.deleteConfirmedPlan())
+        await task.value
+        XCTAssertTrue(model.deletionPhotos.isEmpty)
+        XCTAssertEqual(model.cleanupCatalog.map(\.id), ["c1", "c2"])
+        let restored = try JSONDecoder().decode([String: ProcessedGroup].self, from: JSONEncoder().encode(model.history))
+        XCTAssertEqual(restored.values.first { $0.manual == true }?.deletionSummary, "1 deleted")
+        XCTAssertEqual(restored[allDiscarded.id]?.deletionSummary, "0 kept · 2 deleted")
+        XCTAssertEqual(restored[partial.id]?.deletionSummary, "1 kept · 2 deleted")
+    }
+
+    @MainActor func testCleanupReconcilesEditedAndNewlyGroupedPhotos() {
+        let group = group("a")
+        let photos = group.photos.map { CleanupPhoto(photo: $0, screenshot: false) }
+        let model = LibraryModel(persistenceEnabled: false)
+        model.updateCleanupCatalog(photos)
+        group.photos.forEach(model.noteCleanupPreview)
+        model.markCleanup(Set(photos.map(\.id)))
+        let changed = Photo(id: "a0", date: group.photos[0].date, modified: .now, width: 1000, height: 1000,
+                            favorite: false, live: false, score: 0)
+        model.groups = [SimilarGroup(photos: Array(group.photos.dropFirst()))]
+        model.updateCleanupCatalog([CleanupPhoto(photo: changed, screenshot: false)] + photos.dropFirst())
+        XCTAssertTrue(model.pendingCleanup.isEmpty)
+        XCTAssertFalse(model.canMarkCleanup(changed))
+        XCTAssertNotNil(model.cleanupNotice)
     }
 }

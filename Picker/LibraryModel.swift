@@ -3,11 +3,12 @@ import Photos
 import SwiftUI
 
 enum ReviewFilter: String, CaseIterable, Identifiable {
-    case all = "Similar Photos", pending = "Pending", history = "History"
+    case all = "Similar Photos", cleanup = "Cleanup", pending = "Pending", history = "History"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .all: "square.stack"
+        case .cleanup: "photo.on.rectangle"
         case .pending: "tray.full"
         case .history: "clock.arrow.circlepath"
         }
@@ -18,9 +19,16 @@ enum DeletionScope { case currentGroup, pending }
 
 @MainActor @Observable
 final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
-    var authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    var authorization: PHAuthorizationStatus
     var groups: [SimilarGroup] = []
     var decisions: [String: Decision] = [:]
+    private(set) var cleanupCatalog: [CleanupPhoto] = []
+    private var cleanupByID: [String: CleanupPhoto] = [:]
+    private var cleanupMarks: [String: Photo] = [:]
+    private var viewedCleanupPhotos: [String: Photo] = [:]
+    private(set) var cleanupReady = false
+    var cleanupNotice: String?
+
     var history: [String: ProcessedGroup] = [:] {
         didSet { rebuildProcessedKeepers() }
     }
@@ -53,8 +61,15 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     private let analyzer = PhotoAnalyzer()
     private let persistenceEnabled: Bool
 
-    init(persistenceEnabled: Bool = true) {
+    typealias DeleteAssets = @MainActor ([Photo], Set<String>) async throws -> Void
+    private let deleteAssets: DeleteAssets
+
+    init(persistenceEnabled: Bool = true, deleteAssets: DeleteAssets? = nil) {
         self.persistenceEnabled = persistenceEnabled
+        self.authorization = persistenceEnabled ? PHPhotoLibrary.authorizationStatus(for: .readWrite) : .notDetermined
+        self.deleteAssets = deleteAssets ?? (persistenceEnabled ? Self.deleteUsingPhotoKit : { _, _ in
+            throw DeletionError.permission
+        })
         super.init()
     }
 
@@ -64,22 +79,33 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
 
     var hasAccess: Bool { authorization == .authorized || authorization == .limited }
     var selectedGroup: SimilarGroup? {
-        if filter == .pending { return nil }
-        if filter == .history { return history.values.first { $0.id == selectedID }?.group }
+        if filter == .pending || filter == .cleanup { return nil }
+        if filter == .history { return selectedHistory?.group }
         return groups.first { $0.id == selectedID }
+    }
+    var selectedHistory: ProcessedGroup? { selectedID.flatMap { history[$0] } }
+    var historyEntries: [ProcessedGroup] { history.values.sorted { $0.processedAt > $1.processedAt } }
+    var pendingCleanup: [Photo] {
+        cleanupMarks.values.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
     }
     var queuedGroups: [SimilarGroup] { groups.filter { matches($0, filter: .pending) } }
     var potentialRemovalCount: Int { groups.reduce(0) { $0 + max($1.photos.count - 1, 0) } }
-    var deletionPhotos: [Photo] { queuedGroups.flatMap { ReviewRules.deletions(in: $0, decision: decisions[$0.id]) } }
+    var deletionPhotos: [Photo] {
+        let groupRemovals = queuedGroups.flatMap { ReviewRules.deletions(in: $0, decision: decisions[$0.id]) }
+        let groupedIDs = Set(groupRemovals.map(\.id))
+        return groupRemovals + pendingCleanup.filter { !groupedIDs.contains($0.id) }
+    }
     var visibleGroups: [SimilarGroup] {
-        if filter == .history { return history.values.sorted { $0.processedAt > $1.processedAt }.map(\.group) }
+        if filter == .history { return historyEntries.map(\.group) }
         return groups.filter { matches($0, filter: filter) }
     }
     var highlighted: Photo? { selectedGroup?.photos.first { $0.id == highlightedID } }
-    var plannedPhotos: [Photo] { deletionPlan.flatMap { ReviewRules.deletions(in: $0.group, decision: $0.decision) } }
+    var plannedPhotos: [Photo] { deletionPlan.flatMap(\.removals) }
+    var canOpenQueue: Bool { !deletionPhotos.isEmpty && (cleanupMarks.isEmpty || (cleanupReady && !needsRefresh)) }
 
     func matches(_ group: SimilarGroup, filter: ReviewFilter) -> Bool {
         switch filter {
+        case .cleanup: return false
         case .all:
             guard history[group.id] == nil || history[group.id]?.invalidated == true else { return false }
             return !isProcessedKeeperGroup(group)
@@ -90,7 +116,7 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     }
     private func rebuildProcessedKeepers() {
         var retained: [String: [Photo]] = [:]
-        for entry in history.values.filter({ $0.deletedAt != nil }).sorted(by: { $0.processedAt < $1.processedAt }) {
+        for entry in history.values.filter({ $0.deletedAt != nil && $0.manual != true }).sorted(by: { $0.processedAt < $1.processedAt }) {
             let keepers = entry.group.photos.filter { entry.decision.keepers.contains($0.id) }
             for photo in keepers { retained[photo.id] = keepers }
         }
@@ -103,14 +129,16 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     }
     func sidebarCount(_ filter: ReviewFilter) -> Int {
         switch filter {
+        case .cleanup: return cleanupCatalog.count
         case .all: return groups.filter { matches($0, filter: .all) }.count
         case .pending: return deletionPhotos.count
         case .history: return history.count
         }
     }
     func canApply(_ group: SimilarGroup) -> Bool {
-        guard canReview(group), let decision = decisions[group.id], !decision.keepers.isEmpty, !decision.skipped,
-              decision.keepers.isSubset(of: Set(group.photos.map(\.id))) else { return false }
+        guard canReview(group), let decision = decisions[group.id], ReviewRules.valid(decision, in: group),
+              !ReviewRules.deletions(in: group, decision: decision).isEmpty
+                || decision.keepers.count == group.photos.count else { return false }
         return history[group.id]?.decision != decision || history[group.id]?.invalidated == true
     }
     func applyCurrentGroup() {
@@ -135,7 +163,7 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     }
     func restoreReviewState() {
         // Migrate the earlier Apply-to-Pending flow without losing any choices.
-        for (id, entry) in history where entry.deletedAt == nil && !entry.decision.skipped
+        for (id, entry) in history where entry.deletedAt == nil && entry.manual != true && !entry.decision.skipped
             && !ReviewRules.deletions(in: entry.group, decision: entry.decision).isEmpty {
             if !entry.invalidated, decisions[id] == nil { decisions[id] = entry.decision }
             history[id] = nil
@@ -155,6 +183,7 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             // The analyzer validates cached groups off the main actor before publishing them.
             decisions = LocalStore.read([String: Decision].self, name: "decisions.json") ?? [:]
             history = LocalStore.read([String: ProcessedGroup].self, name: "history.json") ?? [:]
+            cleanupMarks = LocalStore.read([String: Photo].self, name: "cleanup-pending.json") ?? [:]
             restoreReviewState()
             refresh()
         }
@@ -164,8 +193,9 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         start()
     }
     func refresh(retryUnavailable: Bool = false) {
-        guard hasAccess, !scanning, !deleting, !showQueue, !showScreenshots, !preparingReview else { return }
+        guard persistenceEnabled, hasAccess, !scanning, !deleting, !showQueue, !showScreenshots, !preparingReview else { return }
         scanning = true
+        cleanupReady = false
         scanned = 0
         status = "Checking for library changes…"
         scanTask = Task {
@@ -182,6 +212,7 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
                     entry.invalidated = true
                     history[id] = entry
                 }
+                updateCleanupCatalog(result.cleanupPhotos)
                 saveHistory()
                 applyProgress(result.progress)
                 hasScanned = true
@@ -200,7 +231,8 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         }
     }
     func canReview(_ group: SimilarGroup) -> Bool {
-        !deleting && !showQueue && !preparingReview && history[group.id]?.deletedAt == nil
+        !group.photos.isEmpty && !deleting && !showQueue && !preparingReview && !showScreenshots
+            && groups.contains(group) && history[group.id]?.deletedAt == nil
             && !(filter == .history && history[group.id]?.invalidated == true)
             && (!scanning || readyGroupIDs.contains(group.id))
     }
@@ -243,7 +275,7 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         }
         groups = byID.values.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
         // New background results must not move the photo currently being reviewed.
-        if selectedGroup == nil { select(visibleGroups.first) }
+        if selectedGroup == nil { ensureSelection() }
         if invalidatedDecision { saveDecisions() }
     }
     private func applyProgress(_ progress: ScanProgress) {
@@ -254,8 +286,15 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         unavailable = progress.unavailable
     }
     func openQueue() {
-        let plan = queuedGroups.compactMap { group in
+        guard canOpenQueue else { return }
+        var plan = queuedGroups.compactMap { group in
             decisions[group.id].map { ProcessedGroup(group: group, decision: $0, processedAt: .now) }
+        }
+        let manual = pendingCleanup
+        if !manual.isEmpty {
+            plan.append(ProcessedGroup(group: SimilarGroup(photos: manual),
+                                       decision: Decision(discards: Set(manual.map(\.id))),
+                                       processedAt: .now, manual: true))
         }
         openDeletionReview(plan, scope: .pending)
     }
@@ -292,6 +331,11 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     }
     func isDeletionPlanCurrent(_ plan: [ProcessedGroup]) -> Bool {
         !plan.isEmpty && plan.allSatisfy { entry in
+            if entry.manual == true {
+                return cleanupReady && !needsRefresh && entry.removals == entry.group.photos
+                    && entry.group.photos.allSatisfy { cleanupByID[$0.id]?.photo == $0 && cleanupMarks[$0.id] == $0 }
+                    && Set(entry.group.photos.map(\.id)) == Set(cleanupMarks.keys)
+            }
             guard let current = groups.first(where: { $0.id == entry.id }) else { return false }
             return matches(current, filter: .pending) && ReviewRules.unchanged(entry.group, current)
                 && decisions[entry.id] == entry.decision
@@ -305,6 +349,11 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
     }
     func cancelScan() { scanTask?.cancel() }
     func ensureSelection() {
+        if filter == .history {
+            if selectedHistory == nil { selectedID = historyEntries.first?.id }
+            return
+        }
+        guard filter == .all else { return }
         if !visibleGroups.contains(where: { $0.id == selectedID }) { select(visibleGroups.first) }
         else if highlighted == nil { highlightedID = selectedGroup?.suggestedID }
     }
@@ -318,36 +367,46 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
         highlightedID = group.photos[(index + delta + group.photos.count) % group.photos.count].id
     }
     func moveGroup(_ delta: Int) {
-        let list = visibleGroups
-        guard !list.isEmpty else { return }
-        let index = list.firstIndex { $0.id == selectedID } ?? 0
-        select(list[min(max(index + delta, 0), list.count - 1)])
+        if filter == .history {
+            let ids = historyEntries.map(\.id)
+            guard let index = ids.firstIndex(of: selectedID ?? "") else { return }
+            selectedID = ids[min(max(index + delta, 0), ids.count - 1)]
+        } else {
+            let list = visibleGroups
+            guard !list.isEmpty else { return }
+            let index = list.firstIndex { $0.id == selectedID } ?? 0
+            select(list[min(max(index + delta, 0), list.count - 1)])
+        }
     }
     func chooseHighlighted() {
-        guard let group = selectedGroup, let highlightedID, canReview(group) else { return }
-        var decision = decisions[group.id] ?? Decision()
-        decision.skipped = false
-        decision.keepers.insert(highlightedID)
-        updateDecision(decision, in: group)
+        guard let group = selectedGroup, let highlighted else { return }
+        setKeeper(highlighted, in: group, keep: true)
     }
+
+    func markEntireGroup(_ group: SimilarGroup) {
+        guard canReview(group) else { return }
+        updateDecision(Decision(discards: Set(group.photos.map(\.id))), in: group)
+    }
+
     func setKeeper(_ photo: Photo, in group: SimilarGroup, keep: Bool) {
-        guard canReview(group), group.photos.contains(where: { $0.id == photo.id }) else { return }
-        var decision = decisions[group.id] ?? Decision()
+        guard canReview(group), group.photos.contains(photo) else { return }
+        let previous = decisions[group.id].flatMap { ReviewRules.valid($0, in: group) ? $0 : nil }
+        var keepers = previous?.keepers ?? []
+        var discards = Set(ReviewRules.deletions(in: group, decision: previous).map(\.id))
         if keep {
-            decision.skipped = false
-            decision.keepers.insert(photo.id)
-        } else {
-            // Crossing a neutral photo explicitly keeps its alternatives.
-            if decision.skipped || decision.keepers.isEmpty {
-                decision = Decision(keepers: Set(group.photos.map(\.id)))
+            // The first tick keeps a single photo and queues its alternatives.
+            if keepers.isEmpty && discards.isEmpty {
+                discards = Set(group.photos.map(\.id))
             }
-            // A group must retain a keeper. Reset is the explicit route back to neutral.
-            guard !decision.skipped, !decision.keepers.isEmpty,
-                  !decision.keepers.contains(photo.id) || decision.keepers.count > 1 else { return }
-            decision.keepers.remove(photo.id)
+            keepers.insert(photo.id)
+            discards.remove(photo.id)
+        } else {
+            keepers.remove(photo.id)
+            discards.insert(photo.id)
         }
-        updateDecision(decision, in: group)
+        updateDecision(Decision(keepers: keepers, discards: discards), in: group)
     }
+
     private func updateDecision(_ decision: Decision, in group: SimilarGroup) {
         if let processed = history[group.id], processed.decision != decision || processed.invalidated {
             history[group.id] = nil
@@ -394,59 +453,139 @@ final class LibraryModel: NSObject, PHPhotoLibraryChangeObserver {
             }
         }
     }
-    func deleteConfirmedPlan() {
-        guard !deleting, !scanning, !deletionPlan.isEmpty else { return }
+    @discardableResult
+    func deleteConfirmedPlan() -> Task<Void, Never>? {
+        // SwiftUI may clear the presentation binding during the destructive button action.
+        guard !deleting, !scanning, !deletionPlan.isEmpty else { return nil }
         deleting = true
         let plan = deletionPlan
-        Task { await deletePlannedPhotos(plan) }
+        return Task { await deletePlannedPhotos(plan) }
     }
+
+    private enum DeletionError: LocalizedError {
+        case permission, changed, invalidChoices
+        var errorDescription: String? {
+            switch self {
+            case .permission: "Allow Picker to access Photos, then try again."
+            case .changed: "The library or your choices changed. Review Pending again."
+            case .invalidChoices: "These choices no longer identify a valid deletion. Review Pending again."
+            }
+        }
+    }
+
     private func deletePlannedPhotos(_ plan: [ProcessedGroup]) async {
-        let photos = plan.flatMap { $0.group.photos }
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: photos.map(\.id), options: nil)
-        var current: [String: PHAsset] = [:]
-        assets.enumerateObjects { asset, _, _ in current[asset.localIdentifier] = asset }
-        guard isDeletionPlanCurrent(plan),
-              photos.allSatisfy({ photo in
-                  guard let asset = current[photo.id] else { return false }
-                  return asset.modificationDate == photo.modified && asset.isFavorite == photo.favorite
-                      && asset.pixelWidth == photo.width && asset.pixelHeight == photo.height
-              }) else {
-            errorMessage = "Your library or choices changed. Nothing was deleted. Check the library and review Pending again."
-            deleting = false
-            showQueue = false
-            needsRefresh = true
-            resumeRefreshIfNeeded()
-            return
-        }
-        let ids = Set(plan.flatMap { ReviewRules.deletions(in: $0.group, decision: $0.decision).map(\.id) })
-        let keepers = Set(plan.flatMap { Array($0.decision.keepers) })
-        guard !ids.isEmpty, ids.isDisjoint(with: keepers) else {
-            errorMessage = "These choices no longer identify a valid deletion. Review the group again."
-            deleting = false
-            showQueue = false
-            queueClosed()
-            return
-        }
-        let removals = ids.compactMap { current[$0] }
         do {
-            try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(removals as NSArray) }
+            guard isDeletionPlanCurrent(plan) else { throw DeletionError.changed }
+            let photos = plan.flatMap { $0.group.photos }
+            let removals = plan.flatMap(\.removals)
+            let ids = Set(removals.map(\.id))
+            // A photo in overlapping entries must never be deleted on the strength of one entry alone.
+            guard !ids.isEmpty, Set(photos.map(\.id)).count == photos.count else {
+                throw DeletionError.invalidChoices
+            }
+            try await deleteAssets(photos, ids)
             recordDeletionSuccess(plan)
             total = max(total - ids.count, 0)
             status = "Moved \(ids.count.formatted()) photos to Recently Deleted."
-        } catch { errorMessage = "Photos weren’t deleted. Your pending list is saved. \(error.localizedDescription)" }
+        } catch {
+            errorMessage = "Photos weren’t deleted. Your pending list is saved. \(error.localizedDescription)"
+        }
         deleting = false
         showQueue = false
         deletionPlan = []
-        needsRefresh = true
+        if persistenceEnabled { needsRefresh = true }
         resumeRefreshIfNeeded()
     }
+
+    private static func deleteUsingPhotoKit(_ photos: [Photo], ids: Set<String>) async throws {
+        let authorization = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard authorization == .authorized || authorization == .limited else { throw DeletionError.permission }
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: photos.map(\.id), options: nil)
+        var current: [String: PHAsset] = [:]
+        assets.enumerateObjects { asset, _, _ in current[asset.localIdentifier] = asset }
+        guard photos.allSatisfy({ photo in
+            guard let asset = current[photo.id] else { return false }
+            return asset.mediaType == .image && (asset.creationDate ?? .distantPast) == photo.date
+                && asset.modificationDate == photo.modified && asset.isFavorite == photo.favorite
+                && asset.pixelWidth == photo.width && asset.pixelHeight == photo.height
+                && asset.mediaSubtypes.contains(.photoLive) == photo.live
+        }) else { throw DeletionError.changed }
+
+        let removals = ids.compactMap { current[$0] }
+        try await PHPhotoLibrary.shared().performChanges { PHAssetChangeRequest.deleteAssets(removals as NSArray) }
+    }
+
+    func updateCleanupCatalog(_ photos: [CleanupPhoto]) {
+        let grouped = Set(groups.flatMap { $0.photos.map(\.id) })
+        cleanupCatalog = photos.filter { !grouped.contains($0.id) }
+        cleanupByID = Dictionary(uniqueKeysWithValues: cleanupCatalog.map { ($0.id, $0) })
+        viewedCleanupPhotos = viewedCleanupPhotos.filter { cleanupByID[$0.key]?.photo == $0.value }
+        let validMarks = cleanupMarks.filter { cleanupByID[$0.key]?.photo == $0.value }
+        let invalidated = cleanupMarks.count - validMarks.count
+        if invalidated > 0 {
+            cleanupNotice = "\(invalidated.formatted()) Cleanup marks were cleared because the photos changed, moved into a group, or are no longer available."
+            cleanupMarks = validMarks
+            saveCleanupMarks()
+        }
+        cleanupReady = true
+    }
+
+    func noteCleanupPreview(_ photo: Photo) {
+        guard cleanupReady, cleanupByID[photo.id]?.photo == photo else { return }
+        viewedCleanupPhotos[photo.id] = photo
+    }
+
+    func isCleanupMarked(_ id: String) -> Bool { cleanupMarks[id] != nil }
+
+    func canMarkCleanup(_ photo: Photo) -> Bool {
+        cleanupReady && viewedCleanupPhotos[photo.id] == photo && cleanupMarks[photo.id] == nil
+    }
+
+    func markCleanup(_ selection: Set<String>) {
+        guard !deleting, !showQueue, !preparingReview, !showScreenshots else { return }
+        var changed = false
+        for id in selection {
+            guard let photo = cleanupByID[id]?.photo, canMarkCleanup(photo) else { continue }
+            cleanupMarks[id] = photo
+            changed = true
+        }
+        if changed { saveCleanupMarks() }
+    }
+
+    func unmarkCleanup(_ photo: Photo) {
+        guard !deleting, !showQueue, !preparingReview,
+              cleanupMarks[photo.id] == photo else { return }
+        cleanupMarks[photo.id] = nil
+        saveCleanupMarks()
+    }
+
+    private func saveCleanupMarks() {
+        guard persistenceEnabled else { return }
+        do { try LocalStore.write(cleanupMarks, name: "cleanup-pending.json") }
+        catch { errorMessage = "Your Cleanup selections couldn’t be saved: \(error.localizedDescription)" }
+    }
+
     func recordDeletionSuccess(_ plan: [ProcessedGroup]) {
         let ids = Set(plan.map(\.id))
         let next = visibleGroups.drop(while: { $0.id != selectedID }).dropFirst().first { !ids.contains($0.id) }
+        var manualIDs: Set<String> = []
         for var entry in plan {
             entry.deletedAt = .now
             history[entry.id] = entry
-            decisions[entry.id] = nil
+            if entry.manual == true {
+                manualIDs.formUnion(entry.removals.map(\.id))
+            } else {
+                decisions[entry.id] = nil
+            }
+        }
+        if !manualIDs.isEmpty {
+            for id in manualIDs {
+                cleanupMarks[id] = nil
+                cleanupByID[id] = nil
+                viewedCleanupPhotos[id] = nil
+            }
+            cleanupCatalog.removeAll { manualIDs.contains($0.id) }
+            saveCleanupMarks()
         }
         groups.removeAll { ids.contains($0.id) }
         saveHistory()

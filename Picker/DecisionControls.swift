@@ -11,19 +11,15 @@ struct DecisionControls: View {
     private var decision: Decision? { model.decisions[group.id] }
     private var kept: Bool { decision?.skipped == false && decision?.keepers.contains(photo.id) == true }
     private var discarded: Bool { ReviewRules.deletions(in: group, decision: decision).contains { $0.id == photo.id } }
-    private var canDiscard: Bool {
-        guard let decision, !decision.skipped, !decision.keepers.isEmpty else { return group.photos.count > 1 }
-        return !kept || decision.keepers.count > 1
-    }
     var body: some View {
         HStack(spacing: 4) {
             choice(symbol: "checkmark", color: .green, selected: kept, enabled: true,
-                   label: "Keep photo", help: "Keep this photo. You can keep more than one.") {
+                   label: "Keep photo", help: decision == nil ? "Keep this photo and mark the others for deletion. You can keep more afterward." : "Keep this photo. You can keep more than one.") {
                 model.setKeeper(photo, in: group, keep: true)
             }
-            choice(symbol: "xmark", color: .red, selected: discarded, enabled: canDiscard,
+            choice(symbol: "xmark", color: .red, selected: discarded, enabled: true,
                    label: "Mark photo for deletion",
-                   help: canDiscard ? "Mark this photo for deletion and add it to Pending." : "Choose another keeper first, or reset the group to clear all choices.") {
+                   help: "Mark only this photo for deletion and add it to Pending.") {
                 model.setKeeper(photo, in: group, keep: false)
             }
         }

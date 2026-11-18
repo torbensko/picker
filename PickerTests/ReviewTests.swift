@@ -8,7 +8,7 @@ final class ReviewTests: XCTestCase {
     }
     var group: SimilarGroup { SimilarGroup(photos: [photo("a"), photo("b", score: 0.8), photo("c")]) }
 
-    func testNoDeletionWithoutAnExplicitValidKeeper() {
+    func testLegacyEmptyAndInvalidChoicesDeleteNothing() {
         XCTAssertTrue(ReviewRules.deletions(in: group, decision: nil).isEmpty)
         XCTAssertTrue(ReviewRules.deletions(in: group, decision: Decision()).isEmpty)
         XCTAssertTrue(ReviewRules.deletions(in: group, decision: Decision(keepers: ["missing"])).isEmpty)
@@ -39,6 +39,23 @@ final class ReviewTests: XCTestCase {
         let decisions = [group.id: Decision(keepers: ["a", "c"])]
         XCTAssertEqual(try JSONDecoder().decode([String: Decision].self, from: JSONEncoder().encode(decisions)), decisions)
     }
+    func testLegacyJSONKeepsItsOriginalRemovalChoices() throws {
+        let legacy = Data(#"{"keepers":["a"],"skipped":false}"#.utf8)
+        let decision = try JSONDecoder().decode(Decision.self, from: legacy)
+        XCTAssertNil(decision.discards)
+        XCTAssertEqual(ReviewRules.deletions(in: group, decision: decision).map(\.id), ["b", "c"])
+    }
+
+    func testExplicitRemovalsCanLeaveZeroKeepersOrUndecidedPhotos() throws {
+        let all = Decision(discards: ["a", "b", "c"])
+        let decoded = try JSONDecoder().decode(Decision.self, from: JSONEncoder().encode(all))
+        XCTAssertEqual(decoded.keepers, [])
+        XCTAssertEqual(ReviewRules.deletions(in: group, decision: decoded), group.photos)
+        XCTAssertEqual(ReviewRules.deletions(in: group, decision: Decision(discards: ["a"])).map(\.id), ["a"])
+        XCTAssertTrue(ReviewRules.deletions(in: group, decision: Decision(discards: ["missing"])).isEmpty)
+        XCTAssertTrue(ReviewRules.deletions(in: group, decision: Decision(keepers: ["a"], discards: ["a"])).isEmpty)
+    }
+
     @MainActor func testHighlightRecommendationAndKeepersRemainIndependent() {
         let model = LibraryModel(persistenceEnabled: false)
         model.groups = [group]
@@ -119,7 +136,8 @@ final class ReviewTests: XCTestCase {
         model.setKeeper(group.photos[0], in: group, keep: false)
         XCTAssertEqual(ReviewRules.deletions(in: group, decision: model.decisions[group.id]).map(\.id), ["a", "c"])
         model.setKeeper(group.photos[1], in: group, keep: false)
-        XCTAssertEqual(model.decisions[group.id]?.keepers, ["b"], "Last keeper must be retained until reset")
+        XCTAssertEqual(model.decisions[group.id]?.keepers, [])
+        XCTAssertEqual(model.deletionPhotos.map(\.id), ["a", "b", "c"])
         model.reset(group)
         XCTAssertNil(model.decisions[group.id])
         XCTAssertTrue(model.queuedGroups.isEmpty)

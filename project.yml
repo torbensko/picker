@@ -38,7 +38,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_FILE: Picker/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Picker
-        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Picker finds similar photos on your Mac and deletes only the photos you confirm after choosing keepers.
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: Picker helps you review photos on your Mac and moves photos to Recently Deleted only after you confirm.
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.photography
         ENABLE_APP_SANDBOX: YES
         CODE_SIGN_ENTITLEMENTS: Picker/Picker.entitlements

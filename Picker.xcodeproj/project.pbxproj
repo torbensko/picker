@@ -15,6 +15,7 @@
 		4CD9F92E649F5642E3ED50B9 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A4A23C394CA3E1084D3F51 /* ContentView.swift */; };
 		4F9A7DADBE0BDA8EBAA5853B /* DecisionControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44D713E2DFDB3BEE1AED58ED /* DecisionControls.swift */; };
 		8B8778693C781205000D8223 /* PhotoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5664FE47662B9AF6FC7E7E43 /* PhotoView.swift */; };
+		8FAB31DCBB786C5E0782FFD2 /* CleanupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A596619927FA79040AED7537 /* CleanupView.swift */; };
 		90E204F8BBABD033DA49F028 /* Analysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = E31F490B9A1839F6FCA3FEFC /* Analysis.swift */; };
 		B0F9237C161BEC87C78DB121 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = BB8BB0B0AD96D28611579C35 /* Sparkle */; };
 		B60BD01DDC0E79F68FFA58BF /* LayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7B2D7A6AA84DEB1D96FA7B0 /* LayoutTests.swift */; };
@@ -55,6 +56,7 @@
 		5E32FE54A03AEBC28C42FAEF /* ScanPlanning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanPlanning.swift; sourceTree = "<group>"; };
 		5EAD7A9B92A90572C5EA468F /* ArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveTests.swift; sourceTree = "<group>"; };
 		7CA9273A5941874E25207281 /* ScreenshotArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotArchive.swift; sourceTree = "<group>"; };
+		A596619927FA79040AED7537 /* CleanupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupView.swift; sourceTree = "<group>"; };
 		A7BC51E840B8DDF8850E4FD1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B2B50782E89476409D074E36 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B32BFE8E194087A0123FDBD4 /* WorkflowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowTests.swift; sourceTree = "<group>"; };
@@ -118,6 +120,7 @@
 			children = (
 				E31F490B9A1839F6FCA3FEFC /* Analysis.swift */,
 				B2B50782E89476409D074E36 /* Assets.xcassets */,
+				A596619927FA79040AED7537 /* CleanupView.swift */,
 				21A4A23C394CA3E1084D3F51 /* ContentView.swift */,
 				44D713E2DFDB3BEE1AED58ED /* DecisionControls.swift */,
 				A7BC51E840B8DDF8850E4FD1 /* Info.plist */,
@@ -244,6 +247,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				90E204F8BBABD033DA49F028 /* Analysis.swift in Sources */,
+				8FAB31DCBB786C5E0782FFD2 /* CleanupView.swift in Sources */,
 				4CD9F92E649F5642E3ED50B9 /* ContentView.swift in Sources */,
 				4F9A7DADBE0BDA8EBAA5853B /* DecisionControls.swift in Sources */,
 				4839D8112DDF8E2F2300E9F8 /* LibraryModel.swift in Sources */,
@@ -365,7 +369,7 @@
 				INFOPLIST_FILE = Picker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Picker;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Picker finds similar photos on your Mac and deletes only the photos you confirm after choosing keepers.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Picker helps you review photos on your Mac and moves photos to Recently Deleted only after you confirm.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -483,7 +487,7 @@
 				INFOPLIST_FILE = Picker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Picker;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Picker finds similar photos on your Mac and deletes only the photos you confirm after choosing keepers.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Picker helps you review photos on your Mac and moves photos to Recently Deleted only after you confirm.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
